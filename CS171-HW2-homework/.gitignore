@@ -1,0 +1,78 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Directories
+.cache/
+.DS_Store
+.idea/
+.vs/
+.vscode/
+build/
+build-*/
+cmake-build-*/
+CPM/
+
+# LaTeX build products
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.glg
+*.glo
+*.gls
+*.idx
+*.ilg
+*.ind
+*.ist
+*.lof
+*.log
+*.lot
+*.nav
+*.nlo
+*.nls
+*.run.xml
+*.snm
+*.spl
+*.synctex(busy)
+*.synctex.gz
+*.toc
+*.vrb
+*-blx.bib
+
+# Editor and operating-system files
+*~
+*.bak
+*.swp
+Thumbs.db
