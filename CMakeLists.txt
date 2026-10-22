@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 3.25.2)
 project(CS171-HW2 LANGUAGES C CXX)
 
-if (NOT COMMAND CPMAddPackage)
-  if (NOT DEFINED ENV{CPM_SOURCE_CACHE})
+if(NOT COMMAND CPMAddPackage)
+  if(NOT DEFINED ENV{CPM_SOURCE_CACHE})
     set(ENV{CPM_SOURCE_CACHE} "${CMAKE_SOURCE_DIR}/CPM")
     file(MAKE_DIRECTORY "$ENV{CPM_SOURCE_CACHE}")
 
     message(STATUS "CPM_SOURCE_CACHE is not defined, using: $ENV{CPM_SOURCE_CACHE}")
-  endif ()
+  endif()
 
   include(FetchContent)
   FetchContent_Declare(
@@ -16,7 +16,7 @@ if (NOT COMMAND CPMAddPackage)
     GIT_TAG v0.43.1
   )
   FetchContent_MakeAvailable(CPM)
-endif ()
+endif()
 
 CPMAddPackage(
   NAME arietta
@@ -47,6 +47,7 @@ CPMAddPackage(
 file(GLOB_RECURSE SRC_FILES
   CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+
   # "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cu"
 )
 add_executable(${PROJECT_NAME} ${SRC_FILES})
