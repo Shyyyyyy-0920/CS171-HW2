@@ -1,7 +1,7 @@
 # Homework 2: Bezier and B-Spline Surfaces
 
-Name:  
-Student ID:
+Name:  舒浩宇
+Student ID:2024533012
 
 **Please write your Chinese name and your student ID in this README.**
 
