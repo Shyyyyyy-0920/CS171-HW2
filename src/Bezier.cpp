@@ -237,7 +237,6 @@ MeshData TessellateBezier(Surface const &patch, usize resolution, BezierMethod m
     tempVertex.position = sample.position;
     auto norm = sample.du.Cross(sample.dv);
     auto normLength = norm.Norm();
-    // 暂时通过抛异常处理，但是实际问题是存在极点的，因此要特殊处理
     if (normLength < exp)
       norm = poleVector(patch, u, v);
     else
