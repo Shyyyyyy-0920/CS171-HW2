@@ -34,6 +34,7 @@
 
 #include <array>
 #include <bit>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -169,6 +170,24 @@ std::pair<Vec3f<>::AsStorage, float> Bounds(std::vector<Surface> const &surfaces
   return {center, half.Norm()};
 }
 
+// 自己添加的辅助函数，用于计算物体当前距离摄像机的距离，用于自适应纹理细分功能
+float RelativeDistance(Camera const &camera, Vec3f<>::AsStorage const &center, float radius) {
+  return (camera.Position() - center).Norm() / radius;
+}
+
+// 用于通过距离来选择resolution1的挡位
+usize SelectResolution(float relativeDistance, float lastChangeDistance) {
+  if (std::abs(lastChangeDistance - relativeDistance) < 0.4f)
+    return 0;
+  if (relativeDistance < 3.0f)
+    return 16;
+  if (relativeDistance < 5.0f)
+    return 8;
+  if (relativeDistance < 7.0f)
+    return 4;
+  return 1;
+}
+
 /// \brief Calls `draw` to render one `width x height` frame off screen, and saves it as a binary PPM image.
 ///
 /// Rendering off screen makes the size independent of the window, which window managers may resize.
@@ -291,11 +310,29 @@ void Main(int argc, char **argv) {
 
   glEnable(GL_DEPTH_TEST);
   glPointSize(5.0F);
-
+  // 获取模型的center和radius
+  Vec3f<>::AsStorage center;
+  float radius = 0.0f;
+  float lastChangeDistance = 0.0f;
   while (glfwWindowShouldClose(window) == GLFW_FALSE) {
     glfwPollEvents();
 
     auto const &model = models[state.model];
+    if (state.reframe) {
+      center = Bounds(surfaces[state.model]).first;
+      radius = Bounds(surfaces[state.model]).second;
+      state.camera = Camera{};
+      state.camera.Frame(center, radius);
+      state.camera.Orbit(state.yaw, state.pitch);
+      state.reframe = false;
+    }
+    float relativeDistance = RelativeDistance(state.camera, center, radius);
+    usize newResolution = SelectResolution(relativeDistance, lastChangeDistance);
+    if (state.resolution != newResolution && newResolution != 0) {
+      state.resolution = newResolution;
+      state.remesh = true;
+      lastChangeDistance = relativeDistance;
+    }
     if (state.remesh) {
       net = std::make_unique<ControlNet>(surfaces[state.model]);
       state.remesh = false;
@@ -321,13 +358,6 @@ void Main(int argc, char **argv) {
       if (mesh)
         title += " | " + std::to_string(triangleCount) + " triangles";
       glfwSetWindowTitle(window, title.c_str());
-    }
-    if (state.reframe) {
-      auto [center, radius] = Bounds(surfaces[state.model]);
-      state.camera = Camera{};
-      state.camera.Frame(center, radius);
-      state.camera.Orbit(state.yaw, state.pitch);
-      state.reframe = false;
     }
 
     // Left drag orbits the camera.

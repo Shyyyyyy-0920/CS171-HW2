@@ -47,12 +47,12 @@ usize FindSpan(std::vector<float> const &knots, usize degree, usize count, float
 }
 
 Vec3f<>::AsStorage EvaluateBSplineCurve(
-    std::vector<Vec3f<>::AsStorage> const &constrolPoints, std::vector<float> const &knots, usize degree, float t
+    std::vector<Vec3f<>::AsStorage> const &controlPoints, std::vector<float> const &knots, usize degree, float t
 ) {
   std::vector<Vec3f<>::AsStorage> d;
-  auto k = FindSpan(knots, degree, constrolPoints.size(), t);
+  auto k = FindSpan(knots, degree, controlPoints.size(), t);
   for (int i = k - degree; i <= k; ++i)
-    d.push_back(constrolPoints[i]);
+    d.push_back(controlPoints[i]);
   // 下面这个函数用的是de boor算法，外层循环里q是代表第几次迭代，从1开始最终到degree获得最终的点
   // 内层循环，由于我的i代表的是区间左侧的点的下标，因此计算里都得变成i+1.
   // 分母的计算公式是U[次数+混合点的右边点的下标-当前迭代次数+1]-U[混合点的右边点的下标]
@@ -71,26 +71,26 @@ Vec3f<>::AsStorage EvaluateBSplineCurve(
 }
 
 Vec3f<>::AsStorage EvaluateBSplineDerivation(
-    std::vector<Vec3f<>::AsStorage> const &constrolPoints,
+    std::vector<Vec3f<>::AsStorage> const &controlPoints,
     std::vector<float> const &knots,
     usize degree,
     usize count,
     float t
 ) {
-  std::vector<Vec3f<>::AsStorage> constrolPointsDerival{};
+  std::vector<Vec3f<>::AsStorage> controlPointsDerival{};
   for (int i = 1; i < count; ++i) {
     float downNum = knots[i + degree] - knots[i];
     if (downNum == 0)
-      constrolPointsDerival.push_back(Vec3f<>::AsStorage{0.0f, 0.0f, 0.0f});
+      controlPointsDerival.push_back(Vec3f<>::AsStorage{0.0f, 0.0f, 0.0f});
     else {
       float upNum = degree;
-      constrolPointsDerival.push_back((upNum / downNum) * (constrolPoints[i] - constrolPoints[i - 1]));
+      controlPointsDerival.push_back((upNum / downNum) * (controlPoints[i] - controlPoints[i - 1]));
     }
   }
   std::vector<float> knotsDerival{};
   for (int i = 1; i < knots.size() - 1; ++i)
     knotsDerival.push_back(knots[i]);
-  return EvaluateBSplineCurve(constrolPointsDerival, knotsDerival, degree - 1, t);
+  return EvaluateBSplineCurve(controlPointsDerival, knotsDerival, degree - 1, t);
 }
 
 SurfaceSample EvaluateBSpline(Surface const &surface, float u, float v) {
