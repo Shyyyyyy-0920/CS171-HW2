@@ -25,9 +25,15 @@
 % Title portion
 \title{Assignment 2:\\ {Bezier and B-Spline Surfaces}}
 
-\author{Name: \quad \\ student number:\
-\\email: \quad \texttt{}}
-
+\author{Name: \quad Shuhaoyu \\ student number:\ 2024533012
+\\email: \quad \texttt{shuhy2024533012@shanghaitech.edu.cn}}
+\newcommand{\shot}[2]{%
+\begin{minipage}[t]{0.48\linewidth}\centering
+\IfFileExists{images/#1.png}{\includegraphics[width=\linewidth]{images/#1.png}}{%
+\fbox{\parbox[c][27mm][c]{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{%
+\centering\scriptsize Screenshot pending\\[3pt]\texttt{\detokenize{#1}.png}}}}%
+\\[2pt]{\scriptsize #2}\end{minipage}}
+\renewcommand{\shortauthors}{Shu Haoyu}
 % Document starts
 \begin{document}
   \maketitle
@@ -35,7 +41,275 @@
   \vspace*{2 ex}
 
   \section{Introduction}
+I implemented B\'ezier and B-spline surface evaluation and rendering using OpenGL and the Arietta math library. 
+
+The four model keys select different assets: 1 selects a B\'ezier teapot with a bottom, 2 selects a B\'ezier elephant, 3 selects a B-spline teapot without a bottom, and 4 selects a B-spline face. The elephant asset is named \texttt{BezierGumbo}, and the face asset is named \texttt{BSplineHead}.
+
+
+The main parts of my implementation are:
+\begin{itemize}
+\item Evaluate B\'ezier curves with iterative de Casteljau interpolation and extend this calculation to tensor-product patches.
+\item Evaluate B-spline curves with de Boor's algorithm, including span selection and derivative curves.
+\item Sample the valid parameter domains, generate triangle meshes, and approximate normals near degenerate boundaries.
+\item Adapt the tessellation resolution to the relative camera distance.
+\item Select and drag individual control points through their screen projections.
+\item Evaluate the supplied bicubic B\'ezier models in a tessellation evaluation shader.
+\end{itemize}
+I use the supplied loading, camera, mesh, and rendering classes as the framework. My main additions are the algorithms in \texttt{Bezier.cpp} and \texttt{BSpline.cpp}, the adaptive resolution and editing logic in \texttt{Main.cpp}, and the evaluation code in \texttt{Bezier.tese}.
+
   \section{Implementation Details}
+\subsection{Evaluating a B\'ezier curve}
+I implemented \texttt{EvaluateCurve(controlPoints,t)} in \texttt{Bezier.cpp}. Its inputs are the control point array and a parameter $t\in[0,1]$. It returns one three-dimensional position.
+
+I copy the input into \texttt{oldPoints}. Each iteration replaces adjacent points by their linear interpolation and removes the last element. I repeat this process until one point remains. Updating from left to right is suitable because each interpolation reads the following element before it is overwritten. The original control points remain unchanged.
+
+\paragraph{The interpolation formula.}
+For degree $p$ and control points $\mathbf P_0,\ldots,\mathbf P_p$, I start with $\mathbf A_i^{(0)}=\mathbf P_i$. At level $r$,
+\begin{equation}
+\mathbf A_i^{(r)}
+=(1-t)\mathbf A_i^{(r-1)}+t\mathbf A_{i+1}^{(r-1)},
+\end{equation}
+where $r=1,\ldots,p$ and $i=0,\ldots,p-r$. The result is $\mathbf C(t)=\mathbf A_0^{(p)}$. At $t=0$ it is $\mathbf P_0$, and at $t=1$ it is $\mathbf P_p$.
+
+The helper \texttt{derivation(controlPoints,t)} calculates the tangent at one parameter. For positive degree, I construct derivative control points
+\begin{equation}
+\mathbf D_i=p(\mathbf P_{i+1}-\mathbf P_i),
+\qquad i=0,\ldots,p-1.
+\end{equation}
+I evaluate this degree-$(p-1)$ curve using \texttt{EvaluateCurve}. The returned value is a vector $\mathbf C'(t)$, rather than a new curve object.
+
+\subsection{Evaluating a B\'ezier surface}
+The function \texttt{EvaluateBezier(patch,u,v)} receives one patch and one parameter pair. It returns a \texttt{SurfaceSample} containing \texttt{position}, \texttt{du}, and \texttt{dv}. It neither generates the whole mesh nor changes the original control points.
+
+A patch of degrees $p$ and $q$ has $p+1$ points along u and $q+1$ along v. Its expression is
+\begin{equation}
+\mathbf S(u,v)=
+\sum_{i=0}^{p}\sum_{j=0}^{q} B_i^p(u)B_j^q(v)\mathbf P_{ij},
+\end{equation}
+where the $B$ functions are Bernstein basis functions.
+
+For each fixed $i$, I gather $\mathbf P_{i0},\ldots,\mathbf P_{iq}$ and evaluate this curve at $v$. The resulting points are stored in \texttt{Qu}:
+\begin{equation}
+\mathbf Q_i(v)=\sum_{j=0}^{q}B_j^q(v)\mathbf P_{ij}.
+\end{equation}
+Evaluating \texttt{Qu} at $u$ gives the surface position. Applying \texttt{derivation} to this same array at $u$ gives $\mathbf S_u(u,v)$.
+
+For the other tangent, I gather points with fixed $j$, evaluate them at $u$, and store the results in \texttt{Qv}. Applying \texttt{derivation} to \texttt{Qv} at $v$ gives $\mathbf S_v(u,v)$. Both orders describe the same surface position, so I calculate \texttt{position} only once.
+
+\paragraph{Normals near a pole.}
+At a regular point, I use
+\begin{equation}
+\mathbf n=\frac{\mathbf S_u\times\mathbf S_v}
+{\|\mathbf S_u\times\mathbf S_v\|}.
+\end{equation}
+The supplied assets use this order for outward normals. A boundary control row can collapse to one position. At such a pole, the cross product may vanish even though nearby points have useful normals.
+
+I compare the cross-product length with $10^{-12}$. If it is too small, \texttt{poleVector(patch,u,v)} evaluates nearby parameters and returns the first normalized cross product above the threshold. Corner and boundary searches move into the domain. I use a B\'ezier step of $10^{-4}$ and at most 100 attempts in each search direction. This is a nearby normal approximation, rather than an analytic limit. If the CPU search finds no valid candidate, it throws an exception.
+
+\subsection{B-spline spans and curve evaluation}
+I implemented \texttt{FindSpan} in \texttt{BSpline.cpp}. Its parameters are \texttt{knots}, \texttt{degree}, \texttt{count}, and \texttt{t}. Here, \texttt{count} is the number of control points. Writing it as $N$ and the degree as $p$, the complete knot vector has $N+p+1$ entries. The valid domain is
+\begin{equation}
+[U_p,U_N].
+\end{equation}
+It need not be $[0,1]$, and the knots need not be clamped.
+
+For an interior parameter, I find $k$ with $U_k\leq t<U_{k+1}$. My implementation uses a linear scan. The strict upper comparison skips equal knot values. At the upper domain endpoint, I choose the last nonempty span ending at $U_N$. Parameters outside the valid domain are rejected.
+
+The function \texttt{EvaluateBSplineCurve} receives the control points, knots, degree, and parameter. After finding span $k$, I copy the $p+1$ active points, indexed from $k-p$ through $k$, into the temporary vector \texttt{d}. I then apply de Boor interpolation.
+
+\paragraph{The de Boor weights.}
+With global indices, let $\mathbf D_i^{(0)}=\mathbf P_i$ for the active points. At level $r$,
+\begin{equation}
+\begin{aligned}
+\alpha_i^{(r)}&=\frac{t-U_i}{U_{i+p-r+1}-U_i},\\
+\mathbf D_i^{(r)}
+&=(1-\alpha_i^{(r)})\mathbf D_{i-1}^{(r-1)}
++\alpha_i^{(r)}\mathbf D_i^{(r-1)}.
+\end{aligned}
+\end{equation}
+The active indices are $i=k-p+r,\ldots,k$. After $p$ levels, the answer is $\mathbf D_k^{(p)}$.
+
+My code packs each shrinking level at the beginning of \texttt{d}. Therefore, the final value is returned from \texttt{d[0]}, although its mathematical global index is $k$. Unlike de Casteljau interpolation, the weights depend on both the parameter and the knots.
+
+\subsection{B-spline derivatives and surfaces}
+The function \texttt{EvaluateBSplineDerivation} receives the original control points, knots, degree, count, and parameter. For positive degree, I construct
+\begin{equation}
+\mathbf E_i=
+\frac{p}{U_{i+p+1}-U_{i+1}}(\mathbf P_{i+1}-\mathbf P_i),
+\end{equation}
+where $i=0,\ldots,N-2$. The derivative curve has degree $p-1$ and $N-1$ control points. I remove the first and last knots and evaluate the new curve with \texttt{EvaluateBSplineCurve}. If a derivative-control-point denominator is zero, my helper stores a zero vector instead of dividing by zero.
+
+In \texttt{EvaluateBSpline}, I pass the surface and the parameters $u,v$. I use the same tensor-product organization as in the B\'ezier implementation. I first evaluate fixed-i rows using the v knots and degree, then evaluate the intermediate points using the u knots and degree. This gives \texttt{position}; evaluating the corresponding derivative curve gives \texttt{du}. Reversing the directions provides the intermediate points for \texttt{dv}.
+
+I obtain the normal from \texttt{du.Cross(dv)}. For degenerate samples, \texttt{poleVectorBSpline} searches nearby valid parameters. Its steps are scaled independently:
+\begin{equation}
+\begin{aligned}
+h_u&=10^{-4}(\texttt{EndU}-\texttt{BeginU}),\\
+h_v&=10^{-4}(\texttt{EndV}-\texttt{BeginV}).
+\end{aligned}
+\end{equation}
+I check both domain coordinates before each candidate evaluation. This matters when u and v have different domain lengths.
+
+A B\'ezier patch is a special B-spline surface with the endpoint knots repeated $p+1$ and $q+1$ times and no interior knots. Therefore, the same B\'ezier data can also be evaluated by my B-spline functions. The \texttt{B} key selects this CPU path without changing the degrees or control points.
+
+\subsection{Sampling and constructing triangles}
+The function \texttt{TessellateBezier} takes \texttt{patch}, \texttt{resolution}, and \texttt{method}, and samples the unit parameter domain. I implemented the evaluation path. The supplied \texttt{method} parameter does not dispatch to subdivision in my implementation.
+
+Let $r=\texttt{resolution}$. I sample $(u_i,v_j)=(i/r,j/r)$ for $i,j=0,\ldots,r$, producing $(r+1)^2$ vertices. Each \texttt{Vertex} stores the evaluated position and unit normal.
+
+I flatten the grid with $k(i,j)=i(r+1)+j$. For each cell, its corners are
+\begin{equation}
+\begin{aligned}
+a&=k(i,j),&b&=k(i+1,j),\\
+c&=k(i+1,j+1),&d&=k(i,j+1).
+\end{aligned}
+\end{equation}
+I add triangles $(a,b,c)$ and $(a,c,d)$. Their order follows increasing u and then increasing v, matching the normal orientation. Each patch contains $2r^2$ triangles.
+
+\texttt{TessellateBSpline} takes a surface and a resolution. I construct the two sample arrays independently. Their names are \texttt{uSamples} and \texttt{vSamples}. Along u, I visit indices from \texttt{degreeU} through \texttt{countU-1}. Each positive-length span contributes
+\begin{equation}
+U_k+\frac{j}{r}(U_{k+1}-U_k),
+\qquad j=0,\ldots,r-1.
+\end{equation}
+I skip zero-length intervals and append \texttt{EndU()} once at the end. I do the same along v. Thus, the resolution subdivides each nonempty span; it is not the total subdivision count for the entire B-spline domain.
+
+For sample counts $N_u$ and $N_v$, the resulting grid contains $N_uN_v$ vertices and $2(N_u-1)(N_v-1)$ triangles. Its flattened stride is $N_v$, which may differ from the B\'ezier stride.
+
+\subsection{Adaptive resolution from camera distance}
+I added \texttt{RelativeDistance} and \texttt{SelectResolution} in \texttt{Main.cpp}. The supplied \texttt{Bounds} function gives the control point bounding-box center $\mathbf c$ and half-diagonal length $R$. I cache these values when reframing the camera. For camera position $\mathbf e$, I use
+\begin{equation}
+d=\frac{\|\mathbf e-\mathbf c\|}{R}.
+\end{equation}
+Normalizing by model size makes the distance rule comparable between models.
+
+The selected resolution is
+\begin{equation}
+r(d)=
+\begin{cases}
+16,&d<3,\\
+8,&3\leq d<5,\\
+4,&5\leq d<7,\\
+1,&d\geq7.
+\end{cases}
+\end{equation}
+Closer views receive a denser grid. This is a model-wide distance rule. I do not use curvature estimation or irregular triangulation.
+
+I save the relative distance of the most recent actual resolution change. If the current distance differs from it by less than $0.4$, \texttt{SelectResolution} returns zero, meaning that the current resolution is retained. I update this saved distance only when a nonzero result actually changes \texttt{state.resolution}. I then set \texttt{remesh} to request reconstruction. This is a dead zone around the last change distance. The cached bounds are recalculated on reframing, rather than after every control point edit.
+
+\subsection{Selecting and dragging control points}
+I implemented screen-space picking with \texttt{ProjectToNDC}. It receives a world point, view matrix, and projection matrix. It writes an NDC position to an output parameter and returns whether the point passes the clip-region checks.
+
+For a world point $\mathbf p$, I calculate $\mathbf c=PV(\mathbf p,1)^{\mathsf T}$. I reject nonpositive $c_w$ and coordinates outside the clip bounds. For an accepted point,
+\begin{equation}
+\mathbf n=(c_x,c_y,c_z)/c_w.
+\end{equation}
+With window dimensions $W,H$ and a top-left cursor origin, I obtain
+\begin{equation}
+s_x=(n_x+1)W/2,\qquad s_y=(1-n_y)H/2.
+\end{equation}
+I use \texttt{glfwGetWindowSize} to match the cursor coordinate system. Framebuffer dimensions are used for rendering.
+
+I select only on a fresh right-button press. I visit every surface and its \texttt{countU * countV} control points. For cursor position $(x,y)$, I compare the squared distance
+\begin{equation}
+D=(s_x-x)^2+(s_y-y)^2.
+\end{equation}
+The current \texttt{err} is 6 and is compared directly with $D$, so the effective radius is $\sqrt{6}$ window units. I choose the accepted candidate with the smallest screen distance. This method does not perform depth-buffer occlusion tests, so overlapping point projections can be ambiguous.
+
+The selected \texttt{NPCPoints} record stores the surface index, control point indices, and NDC position. While the right button is held, I apply
+\begin{equation}
+\begin{aligned}
+n_x&\leftarrow n_x+2\Delta x/W,\\
+n_y&\leftarrow n_y+2\Delta y/H,
+\end{aligned}
+\end{equation}
+where $\Delta x=x_{\mathrm{current}}-x_{\mathrm{previous}}$ and $\Delta y=y_{\mathrm{previous}}-y_{\mathrm{current}}$. I keep $n_z$ fixed. With unchanged camera and projection matrices, the point moves in a plane parallel to the image plane.
+
+The function \texttt{NDCToWorld(ndc,view,projection)} calculates
+\begin{equation}
+\begin{aligned}
+\mathbf h&=(PV)^{-1}(n_x,n_y,n_z,1)^{\mathsf T},\\
+\mathbf p_{\mathrm{new}}&=(h_x,h_y,h_z)/h_w.
+\end{aligned}
+\end{equation}
+The final division is necessary because $\mathbf h$ is homogeneous. I do not need to recover the original clip-space $w$ separately.
+
+I obtain a mutable reference from \texttt{Surface::Point(i,j)} and assign the new position to it. A nonzero cursor displacement sets \texttt{remesh}, so reconstruction uses the edited data. Releasing the right button clears selection. Orbiting, scrolling, switching models, or resetting the camera also cancels it.
+
+This editor changes one stored control point. It does not synchronize coincident points across patches or enforce periodic constraints. Therefore, editing a shared boundary can change continuity.
+
+\subsection{Evaluating B\'ezier patches on the GPU}
+I implemented the calculations in \texttt{Bezier.tese} and use the supplied \texttt{PatchMesh} path. The CPU uploads patch control points rather than all sampled surface vertices. \texttt{Patch.vert} passes them to the tessellation evaluation shader.
+
+The supplied draw function sets the patch size using the constant \texttt{GL\_PATCH\_VERTICES}. It then draws with \texttt{GL\_PATCHES}. The provided bicubic patches have $4\cdot4=16$ points each. This path uses the default inner and outer tessellation levels supplied by the application, so it has no tessellation control shader.
+
+I read $u,v$ from \texttt{gl\_TessCoord.xy} and evaluate the position and partial derivatives with the same de Casteljau construction as on the CPU. I output the world position and unit normal, and set
+\begin{equation}
+\texttt{gl\_Position}=PV(\mathbf S(u,v),1)^{\mathsf T}.
+\end{equation}
+The fragment stage remains \texttt{Surface.frag}.
+
+My one-dimensional working arrays use \texttt{MAX\_CURVE\_POINTS = 4}, sufficient for the provided cubic curves. The complete patch still contains 16 points, so its input capacity is separate from these curve arrays. This shader does not implement arbitrary degrees or GPU B-spline evaluation.
+
+At a degenerate point, the shader searches nearby samples. If every candidate fails, it returns $(0,1,0)$ as a display fallback. This differs from the CPU exception and is not a recovered geometric normal. The \texttt{G} key switches B\'ezier models between CPU and GPU paths. Both evaluate the same mathematical patch, while the hardware tessellator determines its own triangulation.
+
   \section{Results}
 
+\subsection{The teapot with a bottom: model 1}
+Figure~\ref{fig:views} reserves four views of model 1, the complete B\'ezier teapot with a bottom, in normal-as-color mode.
+\begin{figure}[tb]\centering
+\shot{01_teapot_front}{(a) Front oblique view.}\hfill
+\shot{02_teapot_side}{(b) Side view.}\\[5pt]
+\shot{03_teapot_top}{(c) Upper view.}\hfill
+\shot{04_teapot_bottom}{(d) Bottom surface of model 1.}
+\caption{Planned views of model 1, the B\'ezier teapot with a bottom.}\label{fig:views}
+\end{figure}
+
+\subsection{The elephant, the second teapot, and the face}
+Figure~\ref{fig:models} reserves images of model 2, the B\'ezier elephant; model 3, the B-spline teapot without a bottom; and model 4, the B-spline face.
+\begin{figure}[tb]\centering
+\shot{05_gumbo_phong}{(a) Model 2: B\'ezier elephant.}\hfill
+\shot{06_bspline_teapot}{(b) Model 3: teapot without a bottom.}\\[5pt]
+\shot{07_head_phong}{(c) Model 4: face, shaded.}\hfill
+\shot{08_head_normals}{(d) Model 4: face, normal colors.}
+\caption{Planned renders of models 2--4 and face normal colors.}\label{fig:models}
+\end{figure}
+
+\subsection{Two CPU evaluators on the same patch data}
+Both panels of Figure~\ref{fig:cpu} use model 1, the teapot with a bottom. In CPU mode, I will keep the camera, control net, and displayed resolution fixed and toggle \texttt{B}. This compares direct B\'ezier evaluation with its special-case B-spline interpretation. Both panels retain the same model and degrees.
+\begin{figure}[tb]\centering
+\shot{09_cpu_bezier}{(a) CPU B\'ezier evaluation.}\hfill
+\shot{10_cpu_bspline}{(b) CPU B-spline evaluation.}
+\caption{Planned CPU evaluator comparison on model 1.}\label{fig:cpu}
+\end{figure}
+
+\subsection{Adaptive mesh density}
+Figure~\ref{fig:adaptive} reserves wireframe captures of model 1 at all four resolution levels. I will change camera distance and record the actual resolution in the title. Since zoom changes the model's screen size, the comparison should consider both triangle density and the reported level.
+\begin{figure}[tb]\centering
+\shot{11_adaptive_r16}{(a) Near, resolution 16.}\hfill
+\shot{12_adaptive_r8}{(b) Resolution 8.}\\[5pt]
+\shot{13_adaptive_r4}{(c) Resolution 4.}\hfill
+\shot{14_adaptive_r1}{(d) Far, resolution 1.}
+\caption{Planned distance-based wireframe examples.}\label{fig:adaptive}
+\end{figure}
+
+\subsection{Interactive editing}
+For Figure~\ref{fig:editing}, I will use model 2, the elephant, enable its control net, and capture the original state, a moderate displacement, and a larger deformation after release. The shading will remain unchanged. An isolated control point avoids ambiguity from overlapping projections.
+\begin{figure}[tb]\centering
+\shot{15_edit_before}{(a) Original control net.}\hfill
+\shot{16_edit_drag}{(b) Moderate displacement.}\\[5pt]
+\shot{17_edit_after}{(c) Larger displacement, after release.}
+\caption{Planned control point editing sequence on the elephant.}\label{fig:editing}
+\end{figure}
+
+\subsection{CPU and GPU rendering}
+Both panels of Figure~\ref{fig:gpu} use model 2, the elephant. I will capture it before and after toggling \texttt{G}, with the normal-color mode, and displayed resolution fixed. The images will compare the rendered surface; they will not establish identical triangle layouts or a measured speedup.
+\begin{figure}[tb]\centering
+\shot{18_cpu_surface}{(a) CPU surface sampling.}\hfill
+\shot{19_gpu_surface}{(b) GPU tessellation evaluation.}
+\caption{Planned CPU/GPU comparison on the B\'ezier elephant.}\label{fig:gpu}
+\end{figure}
+
+During development, the TES produced temporary-array resource allocation errors. I reduced the one-dimensional working-array capacity to four to match the supplied cubic curves. 
+
+\clearpage
 \end{document}

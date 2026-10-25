@@ -208,7 +208,6 @@ void main() {
   BezierSample beziersample=EvaluateBezier(controlPoint,degreeU+1,degreeV+1,u,v);
   position = beziersample.position;
   vec3 rawnormal=cross(beziersample.du,beziersample.dv);
-  //poleVector(controlPoint,degreeU+1,degreeV+1,u,v)
   if(length(rawnormal)<exp)
     rawnormal=poleVector(controlPoint,degreeU+1,degreeV+1,u,v);
   normal=normalize(rawnormal);
