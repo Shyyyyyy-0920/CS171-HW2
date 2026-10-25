@@ -58,6 +58,14 @@ constexpr std::array models{
 };
 
 /// \brief Everything the user can change with the keyboard and the mouse.
+struct NPCPoints {
+  usize surfaceIndex = 0;
+  int i = 0;
+  int j = 0;
+  float dSquare = 0.0f;
+  Vec3f<>::AsStorage ndcPosition{};
+};
+
 struct State {
   Camera camera;
   usize model = 0;
@@ -80,7 +88,12 @@ struct State {
   // Render the screenshot from the command line at this size, independent of the window, and then quit.
   bool quitAfterScreenshot = false;
   int screenshotWidth = 1920, screenshotHeight = 1080;
+  bool rightPressed = false;
+  bool rightRelease = false;
+  bool isHit = false; // 用来表示是否选中控制点
+  NPCPoints dragPoint{};
 };
+} // namespace
 
 void PrintHelp() {
   std::cout << "Controls:\n"
@@ -112,6 +125,7 @@ void OnKey(GLFWwindow *window, int key, int, int action, int) {
   case GLFW_KEY_4:
     state.model = static_cast<usize>(key - GLFW_KEY_1);
     state.remesh = state.reframe = true;
+    state.isHit = false;
     break;
   case GLFW_KEY_LEFT_BRACKET:
     state.resolution = std::max<usize>(state.resolution / 2, 1);
@@ -137,14 +151,21 @@ void OnKey(GLFWwindow *window, int key, int, int action, int) {
   case GLFW_KEY_W: state.wireframe = !state.wireframe; break;
   case GLFW_KEY_C: state.controlNet = !state.controlNet; break;
   case GLFW_KEY_F: state.cullBackFaces = !state.cullBackFaces; break;
-  case GLFW_KEY_R: state.reframe = true; break;
+  case GLFW_KEY_R:
+    state.reframe = true;
+    state.isHit = false;
+    break;
   case GLFW_KEY_P: state.screenshot = "screenshot-" + std::to_string(state.screenshotCount++) + ".ppm"; break;
   default: break;
   }
 }
 
+// 修改了一下，保证在缩放前取消选中
 void OnScroll(GLFWwindow *window, double, double offset) {
-  static_cast<State *>(glfwGetWindowUserPointer(window))->camera.Zoom(static_cast<float>(offset));
+  auto &state = *static_cast<State *>(glfwGetWindowUserPointer(window));
+
+  state.isHit = false;
+  state.camera.Zoom(static_cast<float>(offset));
 }
 
 /// \brief Tessellates every surface of a model with the method selected in `state`.
@@ -186,6 +207,37 @@ usize SelectResolution(float relativeDistance, float lastChangeDistance) {
   if (relativeDistance < 7.0f)
     return 4;
   return 1;
+}
+
+// 用于把空间中的点映射到二维显示屏幕上后判断是否在接受范围内
+bool ProjectToNDC(
+    Vec3f<>::AsStorage const &point,
+    Mat4f<>::AsStorage const &view,
+    Mat4f<>::AsStorage const &projection,
+    Vec3f<>::AsStorage &ndc
+) {
+  Vec4f<>::AsStorage Point{point(0), point(1), point(2), 1.0f};
+  Vec4f<>::AsStorage clipPosition = projection * view * Point;
+  auto xc = clipPosition(0);
+  auto yc = clipPosition(1);
+  auto zc = clipPosition(2);
+  auto wc = clipPosition(3);
+  if (wc <= 0 || xc > wc || xc + wc < 0 || yc > wc || yc + wc < 0 || zc > wc || zc + wc < 0)
+    return false;
+  Vec3f<>::AsStorage NDCPotision{xc / wc, yc / wc, zc / wc};
+  ndc = NDCPotision;
+  return true;
+}
+
+// 把ndc点映射回世界坐标
+Vec3f<>::AsStorage
+NDCToWorld(Vec3f<>::AsStorage const &ndc, Mat4f<>::AsStorage const &view, Mat4f<>::AsStorage const &projection) {
+  auto transformMatrix = projection * view;
+  Vec4f<>::AsStorage ndc4{ndc(0), ndc(1), ndc(2), 1.0f};
+  auto worldPosition = transformMatrix.Inverse() * ndc4;
+  float wc = 1.0f / worldPosition(3);
+  Vec3f<>::AsStorage result{worldPosition(0) * wc, worldPosition(1) * wc, worldPosition(2) * wc};
+  return result;
 }
 
 /// \brief Calls `draw` to render one `width x height` frame off screen, and saves it as a binary PPM image.
@@ -277,9 +329,9 @@ void ParseArguments(int argc, char **argv, State &state) {
   }
 }
 
-} // namespace
-
 } // namespace cs171
+
+// namespace cs171
 
 void Main(int argc, char **argv) {
   using namespace cs171;
@@ -314,6 +366,8 @@ void Main(int argc, char **argv) {
   Vec3f<>::AsStorage center;
   float radius = 0.0f;
   float lastChangeDistance = 0.0f;
+  float err = 6.0f;
+
   while (glfwWindowShouldClose(window) == GLFW_FALSE) {
     glfwPollEvents();
 
@@ -333,6 +387,79 @@ void Main(int argc, char **argv) {
       state.remesh = true;
       lastChangeDistance = relativeDistance;
     }
+
+    // Left drag orbits the camera.
+    double x, y;
+    glfwGetCursorPos(window, &x, &y);
+    int width, height, windowWidth, windowHeight;
+    glfwGetFramebufferSize(window, &width, &height);
+    glfwGetWindowSize(window, &windowWidth, &windowHeight);
+    if (width == 0 || height == 0) { // Minimized.
+      glfwWaitEvents();
+      continue;
+    }
+    float aspect = (float)width / (float)height;
+    bool pressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    bool rightPreesed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    bool rightRealease = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_RELEASE;
+    if (pressed && state.dragging) {
+      state.isHit = false;
+      state.camera.Orbit(
+          -0.005F * static_cast<float>(x - state.cursorX), 0.005F * static_cast<float>(y - state.cursorY)
+      );
+    }
+    state.dragging = pressed;
+    if (rightPreesed && !state.rightPressed) {
+      state.isHit = false;
+      std::vector<NPCPoints> nearestPoints{};
+      for (usize surfaceIndex = 0; surfaceIndex < surfaces[state.model].size(); ++surfaceIndex) {
+        auto const &surface = surfaces[state.model][surfaceIndex];
+        for (int i = 0; i < surface.countU; ++i) {
+          for (int j = 0; j < surface.countV; ++j) {
+            Vec3f<>::AsStorage ndcPosition{};
+            auto const &point = surface.Point(i, j);
+            bool valid = ProjectToNDC(point, state.camera.View(), state.camera.Projection(aspect), ndcPosition);
+            if (valid) {
+              float xWindow = (ndcPosition(0) + 1) * windowWidth / 2;
+              float yWindow = (1 - ndcPosition(1)) * windowHeight / 2;
+              float dSquare = (xWindow - x) * (xWindow - x) + (yWindow - y) * (yWindow - y);
+              NPCPoints pointNew{surfaceIndex, i, j, dSquare, ndcPosition};
+              if (dSquare <= err) {
+                state.cursorX = x, state.cursorY = y;
+                nearestPoints.push_back(pointNew);
+              }
+            }
+          }
+        }
+      }
+      if (nearestPoints.size() > 0) {
+        NPCPoints pointNew{};
+        for (int index = 1; index < nearestPoints.size(); ++index)
+          if (nearestPoints[index].dSquare < nearestPoints[0].dSquare)
+            nearestPoints[0] = nearestPoints[index];
+        state.dragPoint = nearestPoints[0];
+        state.isHit = true;
+      }
+    }
+    state.rightPressed = rightPreesed;
+    if (rightPreesed && state.isHit) {
+      float dx = x - state.cursorX;
+      float dy = state.cursorY - y;
+      if (dx != 0 || dy != 0) {
+        state.dragPoint.ndcPosition(0) += 2.0f * dx / windowWidth;
+        state.dragPoint.ndcPosition(1) += 2.0f * dy / windowHeight;
+        auto newWorldPosition =
+            NDCToWorld(state.dragPoint.ndcPosition, state.camera.View(), state.camera.Projection(aspect));
+        auto &hitControlPoint =
+            surfaces[state.model][state.dragPoint.surfaceIndex].Point(state.dragPoint.i, state.dragPoint.j);
+        hitControlPoint = newWorldPosition;
+        state.remesh = true;
+      }
+    }
+    if (rightRealease)
+      state.isHit = false;
+    state.cursorX = x, state.cursorY = y;
+    // 重建
     if (state.remesh) {
       net = std::make_unique<ControlNet>(surfaces[state.model]);
       state.remesh = false;
@@ -360,22 +487,6 @@ void Main(int argc, char **argv) {
       glfwSetWindowTitle(window, title.c_str());
     }
 
-    // Left drag orbits the camera.
-    double x, y;
-    glfwGetCursorPos(window, &x, &y);
-    bool pressed = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-    if (pressed && state.dragging)
-      state.camera.Orbit(
-          -0.005F * static_cast<float>(x - state.cursorX), 0.005F * static_cast<float>(y - state.cursorY)
-      );
-    state.dragging = pressed, state.cursorX = x, state.cursorY = y;
-
-    int width, height;
-    glfwGetFramebufferSize(window, &width, &height);
-    if (width == 0 || height == 0) { // Minimized.
-      glfwWaitEvents();
-      continue;
-    }
     // Draws the scene into the current framebuffer of `w x h` pixels.
     auto draw = [&](int w, int h) {
       glViewport(0, 0, w, h);
